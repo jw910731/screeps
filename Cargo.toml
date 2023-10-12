@@ -30,7 +30,7 @@ lto = true
 # Replace the following to enable wasm-opt optimization
 # wasm-pack will try to install wasm-opt automatically, but it must be installed by hand on some
 # operating systems.
-wasm-opt = false
+wasm-opt = ['-g']
 # See wasm-opt for full available options; handy examples:
 # -O4 - optimize aggressively for performance
 # -Oz - optimize aggressively for code size
