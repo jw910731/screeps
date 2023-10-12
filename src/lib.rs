@@ -1,19 +1,19 @@
 use std::cell::RefCell;
-use std::collections::{hash_map::Entry, HashMap};
 
+use gloo_utils::format::JsValueSerdeExt;
 use log::*;
-use screeps::{
-    constants::{Part, ResourceType},
-    enums::StructureObject,
-    find, game,
-    local::ObjectId,
-    objects::{Creep, Source, StructureController},
-    prelude::*,
-};
+use rand::{rngs::SmallRng, SeedableRng};
+use screeps::{game, objects::Creep, prelude::*};
 use wasm_bindgen::prelude::*;
+
+use crate::creep::CreepMemory;
 
 mod creep;
 mod logging;
+
+thread_local! {
+    static RNG: RefCell<SmallRng> = RefCell::new(rand::rngs::SmallRng::seed_from_u64(0xcafebeef));
+}
 
 // add wasm_bindgen to any function you would like to expose for call from js
 #[wasm_bindgen]
@@ -21,83 +21,51 @@ pub fn setup() {
     logging::setup_logging(logging::Info);
 }
 
-// this is one way to persist data between ticks within Rust's memory, as opposed to
-// keeping state in memory on game objects - but will be lost on global resets!
-thread_local! {
-    static CREEP_TARGETS: RefCell<HashMap<String, CreepTarget>> = RefCell::new(HashMap::new());
-}
-
-// this enum will represent a creep's lock on a specific target object, storing a js reference
-// to the object id so that we can grab a fresh reference to the object each successive tick,
-// since screeps game objects become 'stale' and shouldn't be used beyond the tick they were fetched
-#[derive(Clone)]
-enum CreepTarget {
-    Upgrade(ObjectId<StructureController>),
-    Harvest(ObjectId<Source>),
-}
-
 // to use a reserved name as a function name, use `js_name`:
 #[wasm_bindgen(js_name = loop)]
 pub fn game_loop() {
     debug!("loop starting! CPU: {}", game::cpu::get_used());
-    // mutably borrow the creep_targets refcell, which is holding our creep target locks
-    // in the wasm heap
-    CREEP_TARGETS.with(|creep_targets_refcell| {
-        let mut creep_targets = creep_targets_refcell.borrow_mut();
-        debug!("running creeps");
-        for creep in game::creeps().values() {
-            run_creep(&creep, &mut creep_targets);
+
+    debug!("running creeps");
+    for creep in game::creeps().values() {
+        run_creep(&creep);
+    }
+
+    let creep_name_list = game::creeps()
+        .values()
+        .map(|e| e.name())
+        .collect::<Vec<_>>();
+    for ent in js_sys::Object::entries(&screeps::memory::ROOT.to_owned()) {
+        let arr = JsValue::dyn_into::<js_sys::Array>(ent).unwrap();
+        let name: String = JsValue::into_serde(&arr.get(0)).unwrap();
+        if creep_name_list.iter().find(|&e| *e == name) == None {
+            js_sys::Reflect::delete_property(&screeps::memory::ROOT.to_owned(), &arr.get(0))
+                .unwrap();
         }
-    });
+    }
 
     debug!("running spawns");
     let mut additional = 0;
     for spawn in game::spawns().values() {
-        debug!("running spawn {}", String::from(spawn.name()));
-
-        let body = [Part::Move, Part::Move, Part::Carry, Part::Work];
-        if spawn.room().unwrap().energy_available() >= body.iter().map(|p| p.cost()).sum() {
-            // create a unique name, spawn.
-            let name_base = game::time();
-            let name = format!("{}-{}", name_base, additional);
-            // note that this bot has a fatal flaw; spawning a creep
-            // creates Memory.creeps[creep_name] which will build up forever;
-            // these memory entries should be prevented (todo doc link on how) or cleaned up
-            match spawn.spawn_creep(&body, &name) {
-                Ok(()) => additional += 1,
-                Err(e) => warn!("couldn't spawn: {:?}", e),
-            }
-        }
+        creep::spawn(&spawn, &mut additional);
     }
 
     info!("done! cpu: {}", game::cpu::get_used())
 }
 
-fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
+fn run_creep(creep: &Creep) {
     if creep.spawning() {
         return;
     }
     let name = creep.name();
     debug!("running creep {}", name);
 
-    let target = creep_targets.entry(name);
-    match target {
-        Entry::Occupied(entry) => {
-            creep::run(creep, entry);
-        }
-        Entry::Vacant(entry) => {
-            // no target, let's find one depending on if we have energy
-            let room = creep.room().expect("couldn't resolve creep room");
-            if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
-                for structure in room.find(find::STRUCTURES, None).iter() {
-                    if let StructureObject::StructureController(controller) = structure {
-                        entry.insert(CreepTarget::Upgrade(controller.id()));
-                        break;
-                    }
-                }
-            } else if let Some(source) = room.find(find::SOURCES_ACTIVE, None).get(0) {
-                entry.insert(CreepTarget::Harvest(source.id()));
-            }
-        }
-    }
+    let mut memory: CreepMemory = creep.memory().into_serde().unwrap();
+
+    RNG.with(|rng| {
+        let mut rng = rng.borrow_mut();
+        creep::run(creep, &mut memory, &mut rng);
+    });
+
+    creep.set_memory(&JsValue::from_serde(&memory).unwrap());
 }
