@@ -117,7 +117,12 @@ pub fn run(creep: &Creep, memory: &mut CreepMemory, rng: &mut SmallRng) {
             // no target, let's find one depending on if we have energy
             let room = creep.room().expect("couldn't resolve creep room");
             if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 {
-                if rng.gen_bool(0.5) {
+                let chance = if room.find(find::CONSTRUCTION_SITES, None).len() > 0 {
+                    0.3
+                } else {
+                    0.7
+                };
+                if rng.gen_bool(chance) {
                     // upgrade controller
                     for structure in room.find(find::STRUCTURES, None).iter() {
                         if let StructureObject::StructureController(controller) = structure {
