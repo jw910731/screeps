@@ -7,12 +7,9 @@ use screeps::{
     local::ObjectId,
     objects::{Creep, Source, StructureController},
     prelude::*,
-    ConstructionSite, ErrorCode, MoveToOptions, PolyStyle, ResourceType, StructureExtension,
-    StructureSpawn,
+    ConstructionSite, ErrorCode, MoveToOptions, PolyStyle, ResourceType, StructureSpawn,
 };
 use serde::{Deserialize, Serialize};
-
-const CREEP_THRESHOLD: usize = 6;
 
 // this enum will represent a creep's lock on a specific target object, storing a js reference
 // to the object id so that we can grab a fresh reference to the object each successive tick,
@@ -21,7 +18,7 @@ const CREEP_THRESHOLD: usize = 6;
 pub enum CreepTarget {
     Upgrade(ObjectId<StructureController>),
     Harvest(ObjectId<Source>),
-    Charge,
+    Charge(ObjectId<StructureSpawn>),
     Construct(ObjectId<ConstructionSite>),
 }
 
@@ -69,58 +66,26 @@ pub fn run(creep: &Creep, memory: &mut CreepMemory, rng: &mut SmallRng) {
                         memory.target = None;
                     }
                 }
-                CreepTarget::Charge
+                CreepTarget::Charge(spawn_id)
                     if creep.store().get_used_capacity(Some(ResourceType::Energy)) > 0 =>
                 {
-                    let room = creep.room().expect("couldn't resolve creep room");
-                    let spawns = room.find(find::MY_SPAWNS, None);
-                    let spawn = spawns.first().unwrap();
-                    if room.energy_available() >= 300 {
-                        let structures = room.find(find::STRUCTURES, None);
-                        let mut extension: Option<StructureExtension> = None;
-                        for structure in structures {
-                            if let StructureObject::StructureExtension(ext) = structure {
-                                extension = Some(ext);
-                                break;
-                            }
-                        }
-                        if let Some(extension) = extension {
-                            creep
-                                .transfer(
-                                    &extension,
-                                    ResourceType::Energy,
-                                    Some(
-                                        creep.store().get_used_capacity(Some(ResourceType::Energy)),
-                                    ),
-                                )
-                                .unwrap_or_else(|e| match e {
-                                    ErrorCode::NotInRange => {
-                                        let _ = creep.move_to(&extension);
-                                    }
-                                    _ => {
-                                        warn!("couldn't transfer energy to spawn: {:?}", e);
-                                        memory.target = None;
-                                    }
-                                });
-                        }
-                    } else {
+                    if let Some(spawn) = spawn_id.resolve() {
                         creep
                             .transfer(
-                                spawn,
+                                &spawn,
                                 ResourceType::Energy,
                                 Some(creep.store().get_used_capacity(Some(ResourceType::Energy))),
                             )
                             .unwrap_or_else(|e| match e {
                                 ErrorCode::NotInRange => {
-                                    let _ = creep.move_to(spawn);
+                                    let _ = creep.move_to(&spawn);
                                 }
                                 _ => {
                                     warn!("couldn't transfer energy to spawn: {:?}", e);
                                     memory.target = None;
                                 }
                             });
-                    }
-                    if creep.store().get_used_capacity(Some(ResourceType::Energy)) <= 0 {
+                    } else {
                         memory.target = None;
                     }
                 }
@@ -166,12 +131,17 @@ pub fn run(creep: &Creep, memory: &mut CreepMemory, rng: &mut SmallRng) {
                         }
                     }
                 } else {
-                    if rng.gen_bool(0.3) {
-                        memory.target = Some(CreepTarget::Charge);
-                    }
                     // exist construction site
-                    else if let Some(site) = room.find(find::CONSTRUCTION_SITES, None).first() {
+                    if let Some(site) = room.find(find::CONSTRUCTION_SITES, None).first() {
                         memory.target = Some(CreepTarget::Construct(site.try_id().unwrap()));
+                    } else {
+                        // transfer engergy to spawn
+                        for structure in room.find(find::STRUCTURES, None).iter() {
+                            if let StructureObject::StructureSpawn(spawn) = structure {
+                                memory.target = Some(CreepTarget::Charge(spawn.id()));
+                                break;
+                            }
+                        }
                     }
                 }
             } else if let Some(source) = room.find(find::SOURCES_ACTIVE, None).choose(rng) {
@@ -185,9 +155,7 @@ pub fn spawn(spawn: &StructureSpawn, additional: &mut i32) {
     debug!("running spawn {}", String::from(spawn.name()));
 
     let body = [Part::Move, Part::Move, Part::Carry, Part::Work];
-    if spawn.room().unwrap().energy_available() >= body.iter().map(|p| p.cost()).sum()
-        && game::creeps().values().collect::<Vec<_>>().len() < CREEP_THRESHOLD
-    {
+    if spawn.room().unwrap().energy_available() >= body.iter().map(|p| p.cost()).sum() {
         // create a unique name, spawn.
         let name_base = game::time();
         let name = format!("{}-{}", name_base, additional);
