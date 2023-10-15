@@ -11,6 +11,8 @@ use screeps::{
 };
 use serde::{Deserialize, Serialize};
 
+const CREEP_THRESHOLD: usize = 6;
+
 // this enum will represent a creep's lock on a specific target object, storing a js reference
 // to the object id so that we can grab a fresh reference to the object each successive tick,
 // since screeps game objects become 'stale' and shouldn't be used beyond the tick they were fetched
@@ -155,7 +157,9 @@ pub fn spawn(spawn: &StructureSpawn, additional: &mut i32) {
     debug!("running spawn {}", String::from(spawn.name()));
 
     let body = [Part::Move, Part::Move, Part::Carry, Part::Work];
-    if spawn.room().unwrap().energy_available() >= body.iter().map(|p| p.cost()).sum() {
+    if spawn.room().unwrap().energy_available() >= body.iter().map(|p| p.cost()).sum()
+        && game::creeps().values().collect::<Vec<_>>().len() < CREEP_THRESHOLD
+    {
         // create a unique name, spawn.
         let name_base = game::time();
         let name = format!("{}-{}", name_base, additional);
